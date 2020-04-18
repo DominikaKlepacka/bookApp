@@ -3,6 +3,8 @@
 import os
 import requests
 import json
+import decimal
+import flask.json
 
 from flask import Flask, session, render_template, request, jsonify
 from flask_session import Session
@@ -11,6 +13,14 @@ from sqlalchemy.orm import scoped_session, sessionmaker
 
 app = Flask(__name__)
 
+class MyJSONEncoder(flask.json.JSONEncoder):
+
+    def default(self, obj):
+        if isinstance(obj, decimal.Decimal):
+            # Convert decimal instances to strings.
+            return str(obj)
+        return super(MyJSONEncoder, self).default(obj)
+app.json_encoder = MyJSONEncoder
 # SQLalchemy
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -25,6 +35,8 @@ app.config["SESSION_PERMANENT"] = False
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
+#Goodreads key:
+KEY = open('key.txt', 'r').read()
 # Set up database
 engine = create_engine(os.getenv("DATABASE_URL"))
 db = scoped_session(sessionmaker(bind=engine))
@@ -110,7 +122,6 @@ def details(book_isbn):
     rates=[1,1.5,2,2.5,3,3.5,4,4.5,5]
 
     #### Goodreads:
-    KEY = open('key.txt', 'r').read()
     res = requests.get("https://www.goodreads.com/book/review_counts.json",
                        params={"key": f"{KEY}", "isbns": book_isbn})
     goodreads = res.json()
@@ -131,3 +142,14 @@ def rating(book_isbn):
     db.execute("INSERT INTO reviews (user_id, isbn, rate, user_comment) VALUES (:user_id, :isbn, :rate, :user_comment)", {"user_id":session["user_id"], "isbn":book_isbn, "rate": book_rate, "user_comment": book_comment})
     db.commit()
     return details(book_isbn)
+
+@app.route("/api/<book_isbn>", methods=["GET"])
+def json_book(book_isbn):
+    if db.execute("SELECT * FROM books WHERE isbn = :isbn", {"isbn": book_isbn}).rowcount == 0:
+        return jsonify({"error": "I could not find provided ISBN"}), 404
+    book_data = db.execute("SELECT * FROM books WHERE isbn = :isbn", {"isbn": book_isbn}).fetchone()
+    book_users = db.execute("SELECT * FROM reviews WHERE isbn = :isbn", {"isbn": book_isbn})
+    book_review = book_users.rowcount
+    book_average = db.execute("SELECT CAST(AVG(rate) as decimal(10,2))FROM reviews WHERE isbn = :isbn", {"isbn": book_isbn}).fetchone()[0]
+    
+    return jsonify({"title": book_data.title, "author": book_data.author, "year": book_data.year, "isbn": book_data.isbn, "review_count": book_review, "book_average": book_average})
